@@ -1,0 +1,164 @@
+---
+title: "DESeq2"
+author: "Phi Le"
+date: "8/7/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(GenomicFeatures)
+
+library(stageR)
+library(tidyverse)
+library(data.table)
+library(tximport)
+library(DESeq2)
+library(apeglm)
+library(ggplot2)
+library(ggrepel)
+library(EnhancedVolcano)
+```
+
+
+
+# Loading data from salmon results
+
+```{r}
+samples <- read.table("C:/Users/phill/Documents/Studies and Research/Project with Kurt/src_speed_814/test/targets.txt", header=TRUE)
+samples <- samples %>% dplyr::rename(sample_id = library) %>% filter(group %in% c("HFD_OX", "NMD_OX")) %>% mutate(group = factor(group), sample_id = factor(sample_id)) %>% dplyr::rename( condition = group)
+
+files <- file.path("C:/Users/phill/Documents/Studies and Research/Project with Kurt/src_speed_814/test/data", samples$sample_id, "quant.sf")
+files
+
+freq_sample = table(samples$group) # for counting number of sample size
+
+TxDb <- AnnotationDbi::loadDb("test/new_TxDB.txt")
+k <- keys(TxDb, keytype = "TXNAME")
+txdf <- AnnotationDbi::select(TxDb, k, "GENEID", "TXNAME")
+
+# txi <- tximport(files, type="salmon", tx2gene=txdf, txOut=TRUE,
+                # countsFromAbundance="scaledTPM")
+
+txi = tximport(files, type = "salmon", tx2gene = txdf, countsFromAbundance = "no")
+
+ddsTxi <- DESeqDataSetFromTximport(txi,
+                                   colData = samples,
+                                   design = ~ condition)
+```
+
+# Loading data from 
+```{r}
+library("tximeta")
+samples <- read.table("C:/Users/phill/Documents/Studies and Research/Project with Kurt/src_speed_814/test/targets.txt", header=TRUE)
+
+samples <- samples %>% dplyr::rename(id = library, condition = group) %>% dplyr::mutate(line = str_sub(id,1,7))%>% filter(condition %in% c("ETB_KO_HFD", "HFD_OX")) %>% 
+  mutate(condition = factor(condition), line = factor(line)) %>% as_tibble()
+
+files <- file.path("C:/Users/phill/Documents/Studies and Research/Project with Kurt/src_speed_814/test/data", samples$id, "quant.sf")
+samples$files <- files
+
+samples$names <- samples$id
+se <- tximeta(samples)
+se <- summarizeToGene(se)
+ddsTxi <- DESeqDataSet(se, design = ~ condition)
+```
+# From count matrix (not run since we don't have matrix now)
+
+```{r}
+# cts <- as.matrix(read.csv(pasCts,sep="\t",row.names="gene_id"))
+# coldata <- read.csv(pasAnno, row.names=1)
+# coldata <- coldata[,c("condition","type")]
+# coldata$condition <- factor(coldata$condition)
+# coldata$type <- factor(coldata$type)
+```
+
+```{r}
+dds <- DESeq(ddsTxi)
+
+
+resultsNames(dds)
+```
+# Plot the estimates over the mean of scaled counts for each gene; Note that many of the plots in DESeq2 refer to “normalized counts”; here this just implies scaling the counts by the size factor, so that the differences affecting counts across samples are minimized.
+
+```{r}
+plotDispEsts(dds, ylim=c(1e-3, .5), xlim=c(5,1e5))
+```
+
+```{r}
+
+res <- results(dds, name = "condition_NMD_OX_vs_HFD_OX")
+```
++ MA plot of results
+
+```{r}
+plotMA(res, ylim=c(-8,8))
+```
+
+# Log fold change shrinkage for visualization and ranking
+
+```{r}
+resLFC <- lfcShrink(dds, coef="condition_NMD_OX_vs_HFD_OX", type="apeglm")
+resLFC
+```
++ MA plot Log fold change shrinkage for visualization and rank in
+
+```{r}
+plotMA(resLFC, ylim=c(-2,2))
+```
+# Plot counts
+
+```{r}
+plotCounts(dds, gene=which.min(res$padj), intgroup="condition")
+```
+# Cluster plot
+
+```{r}
+d <- plotCounts(dds, gene=which.min(res$padj), intgroup="condition", 
+                returnData=TRUE)
+library("ggplot2")
+ggplot(d, aes(x=condition, y=count)) + 
+  geom_point(position=position_jitter(w=0.1,h=0)) + 
+  scale_y_log10(breaks=c(25,100,400))
+```
+# Heatmap
+
+```{r}
+library("pheatmap")
+# this gives log2(n + 1)
+ntd <- normTransform(dds)
+# library("vsn")
+# meanSdPlot(assay(ntd))
+select <- order(rowMeans(counts(dds,normalized=TRUE)),
+                decreasing=TRUE)[1:20]
+df <- as.data.frame(colData(dds)[,c("condition", "sample_id")])
+pheatmap(assay(ntd)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+```
+# Tests of log2 fold change above or below a threshold
+
+
++ greaterAbs - $|\beta| > x$ - tests are two-tailed
+
++ lessAbs - $|\beta| < x$ - p values are the maximum of the upper and lower tests
+
++ greater $\beta > x$
++ less - $\beta < x$
+
+```{r}
+par(mfrow=c(2,2),mar=c(2,2,1,1))
+ylim <- c(-2.5,2.5)
+resGA <- results(dds, lfcThreshold=.5, altHypothesis="greaterAbs")
+resLA <- results(dds, lfcThreshold=.5, altHypothesis="lessAbs")
+resG <- results(dds, lfcThreshold=.5, altHypothesis="greater")
+resL <- results(dds, lfcThreshold=.5, altHypothesis="less")
+drawLines <- function() abline(h=c(-.5,.5),col="dodgerblue",lwd=2)
+plotMA(resGA, ylim=ylim); drawLines()
+plotMA(resLA, ylim=ylim); drawLines()
+plotMA(resG, ylim=ylim); drawLines()
+plotMA(resL, ylim=ylim); drawLines()
+```
+
